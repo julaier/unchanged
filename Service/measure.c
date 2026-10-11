@@ -6,6 +6,26 @@
 #include "measure.h"
 #include "flash_param.h"
 
+/* 串口不可用时, 调试参数直接在本文件修改。 */
+#define MEAS_USE_FLASH_PARAMS   0u      /* 0 = 不读旧 Flash 参数, 只用下面代码值 */
+#define MEAS_DEFAULT_ALARM_MM   0.800f  /* 报警阈值 */
+#define MEAS_DEFAULT_WARN_MM    0.500f  /* 提醒阈值 */
+#define MEAS_DEFAULT_HYST_MM    0.050f  /* 迟滞 */
+#define MEAS_DEFAULT_TEMP_K     0.0f    /* 温补系数 */
+#define MEAS_DEFAULT_TEMP_REF_C 25.0f   /* 温补参考温度 */
+#define MEAS_DEFAULT_SWAP       0u      /* 0 = CH0/CH1, 1 = CH1/CH0 */
+
+/*
+ * 代码标定表:
+ *   串口不可用时, 先把 OLED 上显示的 RATIO 抄下来, 按间隙从小到大填到下面,
+ *   再把 MEAS_CODE_CAL_POINTS 改成实际点数 (必须 >= 2)。
+ *   点数不足 2 时, 测得距离会保持 0, 状态显示 UNCAL。
+ */
+#define MEAS_CODE_CAL_POINTS    0       /* 当前使用的代码标定点个数, 0~9 */
+#if (MEAS_CODE_CAL_POINTS < 0) || (MEAS_CODE_CAL_POINTS > MEAS_MAX_POINTS)
+#error "MEAS_CODE_CAL_POINTS must be between 0 and MEAS_MAX_POINTS"
+#endif
+
 #define MEAS_MAGIC         0x4C444331u   /* "LDC1",用于标识参数块 */
 #define MEAS_MEDIAN_N      5             /* 中值滤波窗口大小 */
 #define MEAS_AVG_N         8             /* 均值滤波窗口大小 */
@@ -25,6 +45,17 @@ typedef struct {
     float    pt_gap[MEAS_MAX_POINTS]; /* 标定点间隙 */
     float    pt_ratio[MEAS_MAX_POINTS]; /* 标定点比值 */
 } measure_params_t;
+/*9个标定点的参数更改在这里改*/
+static const float s_code_cal_gap[MEAS_MAX_POINTS] = {
+    0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 0.0f
+};
+static const float s_code_cal_ratio[MEAS_MAX_POINTS] = {
+    0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 0.0f
+};
+
+static void params_sort(measure_params_t *p);
 
 static struct {
     measure_params_t p;
@@ -57,13 +88,13 @@ static void params_default(measure_params_t *p)
 {
     memset(p, 0, sizeof(*p));
     p->magic      = MEAS_MAGIC;/* 标识参数块 */
-    p->alarm_mm   = 0.800f;/* 报警阈值, mm */
-    p->warn_mm    = 0.500f;/* 提醒阈值, mm */
-    p->hyst_mm    = 0.050f;/* 迟滞, mm */
-    p->temp_k     = 0.0f;      /* 默认不做温度修正 */
-    p->temp_ref_c = 25.0f;/* 参考温度, 摄氏度 */
+    p->alarm_mm   = MEAS_DEFAULT_ALARM_MM;/* 报警阈值, mm */
+    p->warn_mm    = MEAS_DEFAULT_WARN_MM;/* 提醒阈值, mm */
+    p->hyst_mm    = MEAS_DEFAULT_HYST_MM;/* 迟滞, mm */
+    p->temp_k     = MEAS_DEFAULT_TEMP_K;/* 默认不做温度修正 */
+    p->temp_ref_c = MEAS_DEFAULT_TEMP_REF_C;/* 参考温度, 摄氏度 */
     p->n_points   = 0u;/* 标定点个数 */
-    p->swap       = 0u;/* 通道交换标志 ,0的时候为ch0/ch1*/
+    p->swap       = MEAS_DEFAULT_SWAP;/* 通道交换标志 ,0的时候为ch0/ch1*/
 }
 //s为静态结构体，存储测量参数和滤波状态
 void measure_init(void)
@@ -73,14 +104,36 @@ void measure_init(void)
     s.last.status = MEAS_ST_UNCAL;//未标定, 距离无效,初始化时先设置为未标定
     s.last.valid  = 0u;//距离无效,初始化时先设置为无效
 }
-//从Flash中读取参数，如果读取失败则使用默认参数
+//把串口不可用时手工填写的代码标定点装入参数表
+static void code_cal_apply(void)
+{
+    int n = (int)MEAS_CODE_CAL_POINTS;
+    int i;
+
+    if (n < 2 || n > MEAS_MAX_POINTS) {
+        return;
+    }
+
+    for (i = 0; i < n; i++) {
+        s.p.pt_gap[i]   = s_code_cal_gap[i];
+        s.p.pt_ratio[i] = s_code_cal_ratio[i];
+    }
+    s.p.n_points = (uint8_t)n;
+    params_sort(&s.p);
+}
+
 void measure_load(void)
 {
+#if MEAS_USE_FLASH_PARAMS
     const measure_params_t *fp = (const measure_params_t *)flash_param_ptr();
-//如果Flash中存储的参数块的魔数和标定点个数有效，则将其复制到s.p中，否则使用默认参数
+
     if (fp->magic == MEAS_MAGIC && fp->n_points <= MEAS_MAX_POINTS) {
         memcpy(&s.p, fp, sizeof(s.p));
     }
+#endif
+
+    /* 代码标定点优先级最高, 便于串口不可用时直接烧录调试。 */
+    code_cal_apply();
 }
 //将当前参数块写入Flash，如果写入失败则不做处理
 void measure_save(void)

@@ -129,7 +129,7 @@ static void i2c_peripheral_init(void)
     i2c.I2C_DutyCycle           = I2C_DutyCycle_2;
     i2c.I2C_OwnAddress1         = 0u;
     i2c.I2C_Ack                 = I2C_Ack_Enable;
-    // 7 位地址模式，LDC1614 的 I2C 地址是 0x50。
+    // 7 位地址模式, 发送地址时底层会左移一位,，LDC1614 的 I2C 地址是 0x50。oled 的 I2C 地址是 0x3C。
     i2c.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
     I2C_Init(I2C1, &i2c);
     I2C_Cmd(I2C1, ENABLE);
